@@ -2,5 +2,5 @@
 datalogger/soil_kpis.csv
 datalogger/daf_datalogger_venv/
 drone/daf_drone_venv/
-datalogger/*.csv
+datalogger/*.csv.*
 drone/soil_kpis/

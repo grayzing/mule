@@ -1,7 +1,7 @@
 sensors:
-  sensor_periodicity_s: 1800 # 20 minutes
-  sensor_sdi12_addresses: [1,4]
-  buffer_csv_path: "/home/jpark/Projects/daf-rpi-datalogger/datalogger/soil_kpis.csv.gz"
+  sensor_periodicity_s: 5 # 20 minutes
+  sensor_sdi12_addresses: []
+  buffer_csv_path: "~/Projects/daf-rpi-datalogger/datalogger/soil_kpis.csv.gz"
 
 networking:
   ap_ssid: "genela_daf"

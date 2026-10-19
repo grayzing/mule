@@ -16,3 +16,7 @@ then you simply run the script to set up the accumulation service
 ```bash
 bash setup.sh
 ```
+
+## Features
+
+This script features automatic detection of sensor addresses. Assuming all sensors in your inventory have distinct addresses, there's no need to manually set addresses to query, it's simply "plug-and-play."

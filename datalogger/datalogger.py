@@ -26,7 +26,7 @@ with open("conf.yaml", "r") as file:
     config = yaml.safe_load(file)
 
 possible_sensor_addresses = [chr(i) for i in list(range(48, 58)) + list(range(97, 123)) + list(range(65, 91))]
-sensor_addresses: set = config["sensors"]["sensor_sdi12_addresses"]
+sensor_addresses: list = []
 soil_kpi_csv_path = config["sensors"]["buffer_csv_path"]
 sensor_query_periodicity_s: int = config["sensors"]["sensor_periodicity_s"]
 
@@ -57,37 +57,56 @@ def get_sdi12_to_usb_port() -> serial.Serial | None:
 
 
 def detect_sensor_addresses(ser: serial.Serial):
+    ser.timeout = 0.2  
+    
     for address in possible_sensor_addresses:
-        time.sleep(1)
+        if address == 'z': # Just skip, z is for the adapter
+            continue
+        
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        
+        time.sleep(0.05) 
+        
         m_command = f"{address}!".encode('utf-8')
         ser.write(m_command)
+        ser.flush()
 
         sdi_12_line = ser.readline()
-        sdi_12_line = ser.readline()
+        raw_decoded = sdi_12_line.decode('utf-8', errors='ignore').strip()
 
-        raw_decoded = sdi_12_line.decode('utf-8', errors='ignore')
+        if raw_decoded and address in raw_decoded:
+            print(f"[green]Sensor with address {address} found! (Response: '{raw_decoded}')[/green]")
+            sensor_addresses.append(address)
 
-        if raw_decoded == address:
-            print(f"[green]Sensor with address {address} found![/green]")
-            sensor_addresses.add(address)
+def query_sensor(ser: serial.Serial, addr: str) -> str:
+    clean_addr = str(addr).strip() 
+    ser.reset_input_buffer()
 
-def query_sensor(ser: serial.Serial, addr: int) -> str:
-    time.sleep(1)
-    m_command = f"{addr}M!".encode('utf-8')
+    m_command = f"{clean_addr}M!".encode('utf-8')
     ser.write(m_command)
+    ser.flush()
     
-    sdi_12_line = ser.readline()
-    sdi_12_line = ser.readline()
+    time.sleep(0.2) 
     
-    d_command = f"{addr}D0!".encode('utf-8')
+    m_response = ser.readline().decode('utf-8', errors='ignore').strip()
+    
+    time.sleep(1.2) 
+    
+    if ser.in_waiting > 0:
+        ser.readline()
+        
+    d_command = f"{clean_addr}D0!".encode('utf-8')
     ser.write(d_command)
+    ser.flush()
+    
+    time.sleep(0.3)
     
     sdi_12_line = ser.readline()
-    sdi_12_line = sdi_12_line[:-2]
-    
-    raw_decoded = sdi_12_line.decode('utf-8', errors='ignore')
+    raw_decoded = sdi_12_line.decode('utf-8', errors='ignore').strip()
 
     return raw_decoded
+
 
 def is_already_connected():
         """Return True if currently active on the target AP, False otherwise."""
@@ -170,10 +189,11 @@ def thread_sensor_accumulation():
         return
     if not Path(soil_kpi_csv_path).exists():
         print("[green]Creating csv file[/green]")
-        headers = ["timestamp", "address", "volumetric_water_content_percent", "soil_temperature_degrees_celsius", "soil_permittivity", "soil_bulk_ec", "raw_decoded"]
+        headers = ["timestamp","address", "raw_decoded"]
         df = pd.DataFrame(columns=headers)
         df.to_csv(soil_kpi_csv_path, index=False)
     print("[green]Starting measurement accumulation loop...[/green]")
+    
     while True:
         for address in sensor_addresses:
             raw_decoded = query_sensor(ser, address)
@@ -183,11 +203,6 @@ def thread_sensor_accumulation():
                 # Parse SDI-12 response payload
                 split_sensor_data = raw_decoded.split('+')
 
-                volumetric_water_content_percent = float(split_sensor_data[1])
-                soil_temperature_degrees_celsius = float(split_sensor_data[2])
-                soil_permittivity = float(split_sensor_data[3])
-                soil_bulk_ec = float(split_sensor_data[4])
-
                 # Append parsed payload to CSV (safe against the networking
                 # component claiming/rotating the buffer file mid-loop)
                 timestamp = datetime.now().isoformat()
@@ -195,12 +210,8 @@ def thread_sensor_accumulation():
                     soil_data_row = pd.DataFrame({
                         "timestamp": timestamp,
                         "address": address,
-                        "volumetric_water_content_percent": volumetric_water_content_percent,
-                        "soil_temperature_degrees_celsius": soil_temperature_degrees_celsius,
-                        "soil_permittivity": soil_permittivity,
-                        "soil_bulk_ec": soil_bulk_ec,
-                        "raw_decoded": raw_decoded
-                    })
+                        "raw_decoded": str(raw_decoded)
+                    },index=[0])
                     soil_data_row.to_csv(soil_kpi_csv_path, mode='a', index=False, header=False)
                     print(f"[blue]Successfully saved measurement for address {address} to CSV.[/blue]")
 
@@ -259,17 +270,15 @@ def thread_drone_uplink():
                         connect()
                 
         elif not is_already_connected():
-            print(f"Not connected. Searching for {ap_ssid}...")
+            #print(f"Not connected. Searching for {ap_ssid}...")
             signal = find_ap()
 
             if signal is None:
-                print("AP not detected")
+                #print("AP not detected")
+                pass
             else:
-                if signal >= ap_threshold:
-                    print(f"AP detected with strong signal: {signal}% >= {ap_threshold}%")
-                    connect()
-                else:
-                    print(f"AP detected but signal is too weak: {signal}% < {ap_threshold}%")
+                print(f"[green]AP detected[/green]")
+                connect()
 
         time.sleep(ap_scan_interval)
 
@@ -278,14 +287,16 @@ if __name__ == "__main__":
     time.sleep(2.5) # delay for arduino bootloader and the 1 second delay of the adapter.
 
     if not ser:
-        exit()
+        print("[red]No candidate port found. Is your SDI-12 to USB adapter connected and receiving power? Terminating...[/red]")
+        sys.exit()
 
     print("[green]Detecting sensor addresses. This will take a minute.[/green]")
     detect_sensor_addresses(ser)
 
-    if ser is None:
-        print("[red]No candidate port found. Is your SDI-12 to USB adapter connected and receiving power? Terminating...[/red]")
-        sys.exit()
+    time.sleep(1.5)  # Give the adapter hardware time to settle down
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
+        
 
     sensor_accumulation_thread = threading.Thread(
         target=thread_sensor_accumulation, 
