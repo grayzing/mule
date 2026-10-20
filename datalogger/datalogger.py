@@ -33,7 +33,6 @@ sensor_query_periodicity_s: int = config["sensors"]["sensor_periodicity_s"]
 ap_ssid = config["networking"]["ap_ssid"]
 ap_pw = config["networking"]["ap_pw"]
 ap_scan_interval: float = config["networking"]["ap_scan_interval"]
-ap_threshold: int = config["networking"].get("ap_threshold", 50)
 buffer_csv_path: str = config["sensors"]["buffer_csv_path"]
 data_reservoir_ip: str = config["networking"]["data_reservoir_ip"]
 
@@ -159,31 +158,6 @@ def find_ap():
 
     return None
 
-def connect():
-    print(f"Connecting to {ap_ssid}...")
-
-    result = subprocess.run(
-        [
-            "nmcli",
-            "device",
-            "wifi",
-            "connect",
-            ap_ssid,
-            "password",
-            ap_pw,
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode == 0:
-        print("Connected successfully!")
-        return True
-
-    print("Connection failed:")
-    print(result.stderr.strip())
-    return False
-
 def thread_sensor_accumulation():
     if not ser:
         return
@@ -226,61 +200,80 @@ def thread_sensor_accumulation():
 
         time.sleep(sensor_query_periodicity_s)
 
+def connect():
+    """Brings up the pre-configured network profile cleanly."""
+    print(f"Connecting to {ap_ssid}...")
+    
+    # Using the pre-built connection profile avoids the key-mgmt CLI bug entirely
+    result = subprocess.run(
+        ["nmcli", "connection", "up", ap_ssid],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode == 0:
+        print("Connected successfully!")
+        return True
+
+    print("Connection failed:")
+    print(result.stderr.strip())
+    return False
+
+def disconnect():
+    print(f"Disconnecting from {ap_ssid}...")
+    subprocess.run(["nmcli", "connection", "down", ap_ssid], capture_output=True)
+
+
 def thread_drone_uplink():
-    print(f"[green]Monitoring network state for AP: {ap_ssid} (Threshold: {ap_threshold}%)[/green]")
+    print(f"[green]Monitoring network state for AP: {ap_ssid})[/green]")
     check_file_path = Path("./soil_kpis.csv")
 
     while True:
-        if check_file_path.is_file() and is_already_connected(): # If the Pi is connected to the AP and there are soil_kpis...
-            # print(f"Already connected to {ap_ssid}. Skipping search...")
-            try:
-                url = f'http://{data_reservoir_ip}/soil_kpi_handler'
-
-                # lock data csv so we can read without race
-                with data_csv_lock:
-                    df = pd.read_csv(soil_kpi_csv_path)
-                    row_count = len(df.index)
-
-                    # Open the file in binary read mode
-                    with open(soil_kpi_csv_path, 'rb') as file_to_send:
-                        # Key name 'file' depends on what the receiving server expects
-                        files = {'file': file_to_send}
-                        
-                        # Send the HTTP POST request
-                        response = requests.post(url, files=files)
-
-                    # Check the server response
-                    if response.status_code == 200:
-                        print("[green]File sent successfully![/green]")
-                        with open(soil_kpi_csv_path, 'r', encoding='utf-8') as f:
-                            reader = csv.reader(f)
-                            row_count = sum(1 for row in reader)
-                        if int(response.json()["row_count"]) == row_count:
-                            print("[green]Row counts match. Clearing the buffer![/green]")
-                            os.remove("temp_buffer.csv")
-                            os.remove(buffer_csv_path)
-                        else:
-                            print("[red]Row count is not the same across drone and datalogger! Possible corruption? Retaining buffer for now.[/red]")
-                    else:
-                        print(f"[red]Failed to send file. Status code: {response.status_code}[/red]")
-            except requests.exceptions.ConnectionError as e:
-                signal = find_ap()
-                if signal is not None:
-                    if signal >= ap_threshold:
-                        connect()
-                
-        elif not is_already_connected():
-            #print(f"Not connected. Searching for {ap_ssid}...")
+        # Check if we have data ready to be uploaded
+        if check_file_path.is_file():
             signal = find_ap()
+            
+            if signal is not None:
+                print(f"[green]Target AP found. Connecting...[/green]")
+                
+                if connect():
+                    time.sleep(1) 
+                    
+                    try:
+                        url = f'http://{data_reservoir_ip}/soil_kpi_handler'
 
-            if signal is None:
-                #print("AP not detected")
-                pass
+                        with data_csv_lock:
+                            df = pd.read_csv(soil_kpi_csv_path)
+                            row_count = len(df.index)
+
+                            with open(soil_kpi_csv_path, 'rb') as file_to_send:
+                                files = {'file': file_to_send}
+                                response = requests.post(url, files=files, timeout=15)
+
+                            if response.status_code == 200:
+                                print("[green]File sent successfully![/green]")
+                                if int(response.json().get("row_count", 0)) == row_count:
+                                    print("[green]Row counts match. Clearing the buffer![/green]")
+                                    if os.path.exists("temp_buffer.csv"):
+                                        os.remove("temp_buffer.csv")
+                                    os.remove(buffer_csv_path)
+                                else:
+                                    print("[red]Row count mismatch! Retaining buffer.[/red]")
+                            else:
+                                print(f"[red]Server returned status code: {response.status_code}[/red]")
+                                
+                    except requests.exceptions.RequestException as e:
+                        print(f"[red]Network error during POST request: {e}[/red]")
+                    
+                    finally:
+                        # CRITICAL: Always disconnect after the transmission attempt finishes or errors out
+                        disconnect()
             else:
-                print(f"[green]AP detected[/green]")
-                connect()
+                # AP not found or signal too weak to safely try a handshake
+                pass
 
         time.sleep(ap_scan_interval)
+
 
 if __name__ == "__main__":
     ser = get_sdi12_to_usb_port()

@@ -1,11 +1,9 @@
 sensors:
   sensor_periodicity_s: 5 # 20 minutes
-  sensor_sdi12_addresses: []
   buffer_csv_path: "~/Projects/daf-rpi-datalogger/datalogger/soil_kpis.csv.gz"
 
 networking:
   ap_ssid: "genela_daf"
   ap_pw: "ggree024"
   ap_scan_interval: 1
-  ap_threshold: 50
   data_reservoir_ip: "10.42.0.1:5000"
