@@ -1,4 +1,6 @@
-# genela-daf-datalogger
+# MULE
+
+**M**obile **U**nit for **L**ogging and **E**xtraction
 
 ![Image](basic_idea.png)
 
