@@ -5,9 +5,9 @@ After=network.target time-sync.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/jpark/Projects/daf-rpi-dataloger/datalogger
+WorkingDirectory=/home/gray/mule/datalogger
 ExecStartPre=/bin/sleep 5
-ExecStart=/home/jpark/Projects/daf-rpi-datalogger/datalogger/daf_datalogger_venv/bin/python3 datalogger.py
+ExecStart=/home/gray/mule/datalogger/daf_datalogger_venv/bin/python3 datalogger.py
 Restart=always
 RestartSec=10
 StandardOutput=journal

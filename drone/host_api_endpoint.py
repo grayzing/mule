@@ -10,6 +10,7 @@ This is where the drone hosts the API endpoint. Over HTTP, the datalogger sends 
 import os
 import csv
 import yaml
+import gzip
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -40,9 +41,9 @@ def receive_file():
         
         print(f"Successfully saved: {file_path}, sanity checking...")
 
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
             reader = csv.reader(f)
-            row_count = sum(1 for row in reader) 
+            row_count = sum(1 for row in reader) - 1
 
         return jsonify({"row_count" : row_count}), 200
 

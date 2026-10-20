@@ -1,2 +1,2 @@
 api_endpoint_config:
-  upload_folder_path: "/home/julie/soil_kpis/"
+  upload_folder_path: "~/soil_kpis/"

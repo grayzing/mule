@@ -5,9 +5,9 @@ After=network.target time-sync.target
 [Service]
 Type=simple
 User=julie
-WorkingDirectory=/home/julie/genela-daf/drone/
+WorkingDirectory=~/mule/drone/
 ExecStartPre=/bin/sleep 5
-ExecStart=/home/julie/genela-daf/drone/daf_drone_venv/python3 host_api_endpoint.py
+ExecStart=~/mule/drone/daf_drone_venv/python3 host_api_endpoint.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
