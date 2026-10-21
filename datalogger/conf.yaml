@@ -1,6 +1,6 @@
 sensors:
-  sensor_periodicity_s: 5 # 20 minutes
-  buffer_csv_path: "/home/gray/mule/datalogger/datalogger/soil_kpis.csv.gz"
+  sensor_periodicity_s: 1800 # 20 minutes
+  buffer_csv_path: "/home/gray/mule/datalogger/soil_kpis.csv.gz"
 
 networking:
   ap_ssid: "genela_daf"

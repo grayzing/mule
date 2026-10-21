@@ -26,7 +26,7 @@ with open("conf.yaml", "r") as file:
     config = yaml.safe_load(file)
 
 possible_sensor_addresses = [chr(i) for i in list(range(48, 58)) + list(range(97, 123)) + list(range(65, 91))]
-sensor_addresses: list = []
+sensor_addresses: dict[str,list] = {}
 soil_kpi_csv_path = config["sensors"]["buffer_csv_path"]
 sensor_query_periodicity_s: int = config["sensors"]["sensor_periodicity_s"]
 
@@ -38,45 +38,54 @@ data_reservoir_ip: str = config["networking"]["data_reservoir_ip"]
 
 data_csv_lock = threading.Lock() # lock for reading and writing from the data csv
 
-def get_sdi12_to_usb_port() -> serial.Serial | None:
+def get_sdi12_to_usb_ports() -> list[serial.Serial] | None:
+    list_of_ports: list[serial.Serial] = []
     print("Finding port for SDI12 <-> USB")
     ports = serial.tools.list_ports.comports()
     
     for port in ports:
         # FTDI chip (VID 0x0403) = SDI-12 adapter
         if port.vid == 0x0403:
-            print(f"Found candidate port: {port.device} ({port.description})")
-            return serial.Serial(
+            print(f"[green]Found candidate port: {port.device} ({port.description})[/green]")
+            list_of_ports.append(serial.Serial(
                             port=port.device,
                             baudrate=9600,
                             bytesize=8,
-                            parity="N")
-    return None
+                            parity="N"))
+            sensor_addresses[str(port.device)] = []
+
+    if len(list_of_ports) == 0:
+        return None
+    return list_of_ports
 
 
 
-def detect_sensor_addresses(ser: serial.Serial):
-    ser.timeout = 0.2  
-    
-    for address in possible_sensor_addresses:
-        if address == 'z': # Just skip, z is for the adapter
+def detect_sensor_addresses(list_of_serials: list[serial.Serial]):
+    for ser in list_of_serials:
+        if not ser.port:
+            print(f"[red]Serial has no port! WTF?[/red]")
             continue
-        
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-        
-        time.sleep(0.05) 
-        
-        m_command = f"{address}!".encode('utf-8')
-        ser.write(m_command)
-        ser.flush()
+        ser.timeout = 0.2
+        print(f"Detecting sensor addresses on serial {ser.port}")
+        for address in possible_sensor_addresses:
+            if address == 'z': # Just skip, z is for the adapter
+                continue
+            
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            
+            time.sleep(0.05) 
+            
+            m_command = f"{address}!".encode('utf-8')
+            ser.write(m_command)
+            ser.flush()
 
-        sdi_12_line = ser.readline()
-        raw_decoded = sdi_12_line.decode('utf-8', errors='ignore').strip()
+            sdi_12_line = ser.readline()
+            raw_decoded = sdi_12_line.decode('utf-8', errors='ignore').strip()
 
-        if raw_decoded and address in raw_decoded:
-            print(f"[green]Sensor with address {address} found! (Response: '{raw_decoded}')[/green]")
-            sensor_addresses.append(address)
+            if raw_decoded and address in raw_decoded:
+                print(f"[green]Sensor with address {address} on serial {ser.port} found! (Response: '{raw_decoded}')[/green]")
+                sensor_addresses[ser.port].append(address)
 
 def query_sensor(ser: serial.Serial, addr: str) -> str:
     clean_addr = str(addr).strip() 
@@ -159,7 +168,7 @@ def find_ap():
     return None
 
 def thread_sensor_accumulation():
-    if not ser:
+    if not list_of_serials:
         return
     if not Path(soil_kpi_csv_path).exists():
         print("[green]Creating csv file[/green]")
@@ -169,36 +178,36 @@ def thread_sensor_accumulation():
     print("[green]Starting measurement accumulation loop...[/green]")
     
     while True:
-        for address in sensor_addresses:
-            raw_decoded = query_sensor(ser, address)
-            print(f"Sensor reading for sensor with address {address}: {raw_decoded}")
+        for ser in list_of_serials:
+            if not ser.port:
+                print(f"[red]Serial has no port? WTF?[/red]")
+                return
+            for address in sensor_addresses[ser.port]:
+                raw_decoded = query_sensor(ser, address)
+                print(f"Sensor reading for sensor with address {address}: {raw_decoded}")
 
-            try:
-                # Parse SDI-12 response payload
-                split_sensor_data = raw_decoded.split('+')
+                try:
+                    # Append parsed payload to CSV (safe against the networking
+                    # component claiming/rotating the buffer file mid-loop)
+                    timestamp = datetime.now().isoformat()
+                    with data_csv_lock:
+                        soil_data_row = pd.DataFrame({
+                            "timestamp": timestamp,
+                            "address": address,
+                            "raw_decoded": str(raw_decoded)
+                        },index=[0])
+                        soil_data_row.to_csv(soil_kpi_csv_path, mode='a', index=False, header=False)
+                        print(f"[blue]Successfully saved measurement for address {address} to CSV.[/blue]")
 
-                # Append parsed payload to CSV (safe against the networking
-                # component claiming/rotating the buffer file mid-loop)
-                timestamp = datetime.now().isoformat()
-                with data_csv_lock:
-                    soil_data_row = pd.DataFrame({
-                        "timestamp": timestamp,
-                        "address": address,
-                        "raw_decoded": str(raw_decoded)
-                    },index=[0])
-                    soil_data_row.to_csv(soil_kpi_csv_path, mode='a', index=False, header=False)
-                    print(f"[blue]Successfully saved measurement for address {address} to CSV.[/blue]")
+                except (IndexError, ValueError) as e:
+                    print(f"[red]Error parsing payload from sensor {address} ('{raw_decoded}'): {e}[/red]")
+                    print(f"[red]Removing sensor {address} from the query list for this session[/red]")
+                    if len(sensor_addresses[ser.port]) > 1:
+                        sensor_addresses[ser.port].remove(address)
+                    else:
+                        print(f"[red]All sensor addresses nonfunctioning for serial {ser.port}![/red]")
 
-            except (IndexError, ValueError) as e:
-                print(f"[red]Error parsing payload from sensor {address} ('{raw_decoded}'): {e}[/red]")
-                print(f"[red]Removing sensor {address} from the query list for this session[/red]")
-                if len(sensor_addresses) > 1:
-                    sensor_addresses.remove(address)
-                else:
-                    print(f"[red]All sensor addresses nonfunctioning! Terminating[/red]")
-                    sys.exit()
-
-        time.sleep(sensor_query_periodicity_s)
+            time.sleep(sensor_query_periodicity_s)
 
 def connect():
     """Brings up the pre-configured network profile cleanly."""
@@ -276,19 +285,20 @@ def thread_drone_uplink():
 
 
 if __name__ == "__main__":
-    ser = get_sdi12_to_usb_port()
+    list_of_serials = get_sdi12_to_usb_ports()
     time.sleep(2.5) # delay for arduino bootloader and the 1 second delay of the adapter.
 
-    if not ser:
-        print("[red]No candidate port found. Is your SDI-12 to USB adapter connected and receiving power? Terminating...[/red]")
+    if not list_of_serials:
+        print("[red]No candidate ports found. Is your SDI-12 to USB adapter(s) connected and receiving power? Terminating...[/red]")
         sys.exit()
 
     print("[green]Detecting sensor addresses. This will take a minute.[/green]")
-    detect_sensor_addresses(ser)
+    detect_sensor_addresses(list_of_serials)
 
-    time.sleep(1.5)  # Give the adapter hardware time to settle down
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
+    for ser in list_of_serials:
+        time.sleep(1.5)  # Give the adapter hardware time to settle down
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
         
 
     sensor_accumulation_thread = threading.Thread(

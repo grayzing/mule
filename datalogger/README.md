@@ -23,6 +23,9 @@ then you simply run the script to set up the accumulation service
 bash setup.sh
 ```
 
+### Setting up network connection
+You will need to connect to your desired AP (the one that you attach to the drone) once before you deploy your logger to the field. This is because the datalogger will not connect to the AP for some reason if you do not do this. Simply turn on your AP, go into your logger, manually connect to the AP, and then you can disconnect.
+
 ## Features
 
 This script features automatic detection of sensor addresses. Assuming all sensors in your inventory have distinct addresses, there's no need to manually set addresses to query, it's simply "plug-and-play."
