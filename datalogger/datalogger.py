@@ -38,6 +38,24 @@ data_reservoir_ip: str = config["networking"]["data_reservoir_ip"]
 data_csv_lock = threading.Lock() # lock for reading and writing from the data csv
 hostname = socket.gethostname() # hostname
 
+def ensure_uap0_exists():
+    """Checks the kernel for uAP0, and recreates it cleanly if it was destroyed."""
+    try:
+        # Check if uAP0 exists in the system interfaces
+        res = subprocess.run(["ip", "link", "show", "uAP0"], capture_output=True, text=True)
+        if res.returncode != 0:
+            print("[yellow]uAP0 interface was destroyed by the hardware driver! Re-creating it...[/yellow]")
+            # Re-initialize the virtual chip space
+            subprocess.run(["sudo", "iw", "dev", "wlan0", "interface", "add", "uAP0", "type", "__ap"], check=True)
+            # Re-spoof the isolated MAC address
+            subprocess.run(["sudo", "ip", "link", "set", "dev", "uAP0", "address", "02:00:00:00:00:55"], check=True)
+            # Bring it up link-wise
+            subprocess.run(["sudo", "ip", "link", "set", "uAP0", "up"], check=True)
+            time.sleep(1)
+    except Exception as e:
+        print(f"[red]Failed to repair uAP0 kernel interface: {e}[/red]")
+
+
 def get_sdi12_to_usb_ports() -> list[serial.Serial] | None:
     list_of_ports: list[serial.Serial] = []
     print("Finding port for SDI12 <-> USB")
@@ -231,7 +249,17 @@ def connect():
 
 def disconnect():
     print(f"Disconnecting from {ap_ssid}...")
+    # 1. Break the client uplink
     subprocess.run(["nmcli", "connection", "down", ap_ssid], capture_output=True)
+    time.sleep(1)
+    
+    # 2. Repair the hardware interface that the kernel just deleted
+    ensure_uap0_exists()
+    
+    # 3. Bring your Field-AP back online safely
+    print("[green]Re-activating Field-AP fallback hotspot...[/green]")
+    subprocess.run(["nmcli", "connection", "up", "Field-AP"], capture_output=True)
+
 
 def is_ssh_active() -> bool:
     """Return True if there is an active, established SSH session to this Pi."""
@@ -254,7 +282,8 @@ def thread_drone_uplink():
         # CRITICAL SAFETY CHECK:
         # If you are working on the Pi via SSH in the field, freeze client network changes
         if is_ssh_active():
-            print("[yellow]SSH Session detected! Pausing client connection attempts to protect terminal lifeline...[/yellow]")
+            print("[yellow]SSH Session active. Ensuring Field-AP interface health...[/yellow]")
+            ensure_uap0_exists()
             time.sleep(ap_scan_interval)
             continue
 
