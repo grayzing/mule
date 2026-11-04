@@ -29,6 +29,7 @@ def receive_file():
         return jsonify({"error": "No file part in the request"}), 400
         
     file = request.files['file']
+    hostname = request.files['hostname']
     
     # If the user does not select a file, the browser/client submits an empty part
     if file.filename == '':
@@ -36,7 +37,7 @@ def receive_file():
     
     if file:
         # Secure the filename and save it to your destination folder
-        file_path = os.path.join(UPLOAD_FOLDER, f"{file.filename}_{datetime.now().isoformat()}")
+        file_path = os.path.join(UPLOAD_FOLDER, f"{hostname}_{file.filename}_{datetime.now().isoformat()}")
         file.save(file_path)
         
         print(f"Successfully saved: {file_path}, sanity checking...")

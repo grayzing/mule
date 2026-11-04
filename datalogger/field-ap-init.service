@@ -1,0 +1,12 @@
+[Unit]
+Description=Provision Dynamic Hostname Wi-Fi Virtual AP
+After=NetworkManager.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/bin/setup_ap.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

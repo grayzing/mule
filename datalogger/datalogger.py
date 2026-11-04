@@ -11,11 +11,10 @@ import time
 import yaml
 import sys
 import os
-import csv
 import threading
 import pandas as pd
 import subprocess
-import shutil
+import socket
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +36,7 @@ buffer_csv_path: str = config["sensors"]["buffer_csv_path"]
 data_reservoir_ip: str = config["networking"]["data_reservoir_ip"]
 
 data_csv_lock = threading.Lock() # lock for reading and writing from the data csv
+hostname = socket.gethostname() # hostname
 
 def get_sdi12_to_usb_ports() -> list[serial.Serial] | None:
     list_of_ports: list[serial.Serial] = []
@@ -172,7 +172,7 @@ def thread_sensor_accumulation():
         return
     if not Path(soil_kpi_csv_path).exists():
         print("[green]Creating csv file[/green]")
-        headers = ["timestamp","address", "raw_decoded"]
+        headers = ["timestamp","address", "serial", "raw_decoded"]
         df = pd.DataFrame(columns=headers)
         df.to_csv(soil_kpi_csv_path, index=False)
     print("[green]Starting measurement accumulation loop...[/green]")
@@ -194,6 +194,7 @@ def thread_sensor_accumulation():
                         soil_data_row = pd.DataFrame({
                             "timestamp": timestamp,
                             "address": address,
+                            "serial": ser.port,
                             "raw_decoded": str(raw_decoded)
                         },index=[0])
                         soil_data_row.to_csv(soil_kpi_csv_path, mode='a', index=False, header=False)
@@ -232,56 +233,77 @@ def disconnect():
     print(f"Disconnecting from {ap_ssid}...")
     subprocess.run(["nmcli", "connection", "down", ap_ssid], capture_output=True)
 
+def is_ssh_active() -> bool:
+    """Return True if there is an active, established SSH session to this Pi."""
+    try:
+        # Check active tcp sockets looking for established SSH connections
+        result = subprocess.run(
+            "ss -t -a | grep -i ssh | grep -i established", 
+            shell=True, capture_output=True, text=True
+        )
+        return len(result.stdout.strip()) > 0
+    except Exception:
+        # Fallback: if the ss command fails, assume safe to prevent field lockout
+        return False
 
 def thread_drone_uplink():
-    print(f"[green]Monitoring network state for AP: {ap_ssid})[/green]")
-    check_file_path = Path("./soil_kpis.csv")
+    print(f"[green]Monitoring network state for AP: {ap_ssid}[/green]")
+    check_file_path = Path(buffer_csv_path)  # Synced cleanly with your config variable
 
     while True:
+        # CRITICAL SAFETY CHECK:
+        # If you are working on the Pi via SSH in the field, freeze client network changes
+        if is_ssh_active():
+            print("[yellow]SSH Session detected! Pausing client connection attempts to protect terminal lifeline...[/yellow]")
+            time.sleep(ap_scan_interval)
+            continue
+
         # Check if we have data ready to be uploaded
         if check_file_path.is_file():
+            # Uses the optimized find_ap() with '--rescan no' to protect virtual AP stability
             signal = find_ap()
             
             if signal is not None:
-                print(f"[green]Target AP found. Connecting...[/green]")
+                print(f"[green]Target AP found (Signal: {signal}%). Connecting...[/green]")
                 
                 if connect():
-                    time.sleep(1) 
+                    time.sleep(2) # Given routing tables a brief moment to stabilize
                     
                     try:
                         url = f'http://{data_reservoir_ip}/soil_kpi_handler'
 
                         with data_csv_lock:
-                            df = pd.read_csv(soil_kpi_csv_path)
-                            row_count = len(df.index)
+                            # Double-check file existence under lock constraint
+                            if check_file_path.is_file():
+                                df = pd.read_csv(soil_kpi_csv_path)
+                                row_count = len(df.index)
 
-                            with open(soil_kpi_csv_path, 'rb') as file_to_send:
-                                files = {'file': file_to_send}
-                                response = requests.post(url, files=files, timeout=15)
+                                with open(soil_kpi_csv_path, 'rb') as file_to_send:
+                                    files = {'file': file_to_send, 'hostname': hostname}
+                                    response = requests.post(url, files=files, timeout=15)
 
-                            if response.status_code == 200:
-                                print("[green]File sent successfully![/green]")
-                                if int(response.json().get("row_count", 0)) == row_count:
-                                    print("[green]Row counts match. Clearing the buffer![/green]")
-                                    if os.path.exists("temp_buffer.csv"):
-                                        os.remove("temp_buffer.csv")
-                                    os.remove(buffer_csv_path)
+                                if response.status_code == 200:
+                                    print("[green]File sent successfully![/green]")
+                                    if int(response.json().get("row_count", 0)) == row_count:
+                                        print("[green]Row counts match. Clearing the buffer![/green]")
+                                        os.remove(buffer_csv_path)
+                                    else:
+                                        print("[red]Row count mismatch! Retaining buffer.[/red]")
                                 else:
-                                    print("[red]Row count mismatch! Retaining buffer.[/red]")
-                            else:
-                                print(f"[red]Server returned status code: {response.status_code}[/red]")
+                                    print(f"[red]Server returned status code: {response.status_code}[/red]")
                                 
                     except requests.exceptions.RequestException as e:
                         print(f"[red]Network error during POST request: {e}[/red]")
                     
                     finally:
-                        # CRITICAL: Always disconnect after the transmission attempt finishes or errors out
+                        # CRITICAL: Always disconnect to return interface control to uAP0
                         disconnect()
             else:
                 # AP not found or signal too weak to safely try a handshake
                 pass
 
         time.sleep(ap_scan_interval)
+
 
 
 if __name__ == "__main__":

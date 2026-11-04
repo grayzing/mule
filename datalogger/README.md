@@ -28,4 +28,5 @@ You will need to connect to your desired AP (the one that you attach to the dron
 
 ## Features
 
-This script features automatic detection of sensor addresses. Assuming all sensors in your inventory have distinct addresses, there's no need to manually set addresses to query, it's simply "plug-and-play."
+This script features:
+- Automatic detection of sensor addresses. Assuming all sensors in your inventory have distinct addresses, there's no need to manually set addresses to query, it's simply "plug-and-play."
